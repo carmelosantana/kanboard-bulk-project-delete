@@ -1203,14 +1203,30 @@ class RemoveEndpointTest extends Base
         }
     }
 
-    public function testLoggerFailureRollsBackDeletionAndReportsFailed()
+    public function testLoggerFailureDeletesNothingAndNeverReachesRemove()
     {
         $pid = $this->seedProject('Audit fails');
+        $this->seedTask($pid);
 
         $controller = $this->buildController(
             isAdmin: true,
             postValues: ['project_ids' => [$pid]]
         );
+
+        // Spy on core's file-aware cascade: it deletes attachments from disk and
+        // cannot be rolled back, so it must never run when the audit write fails.
+        $removeCalls  = 0;
+        $projectModel = $this
+            ->getMockBuilder(\Kanboard\Model\ProjectModel::class)
+            ->setConstructorArgs([$this->container])
+            ->onlyMethods(['remove'])
+            ->getMock();
+        $projectModel->method('remove')->willReturnCallback(function () use (&$removeCalls) {
+            $removeCalls++;
+            return true;
+        });
+        unset($this->container['projectModel']);
+        $this->container['projectModel'] = $projectModel;
 
         $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
         $logger->method('info')->willThrowException(new \RuntimeException('log sink down'));
@@ -1219,9 +1235,44 @@ class RemoveEndpointTest extends Base
 
         $controller->remove();
 
-        $this->assertProjectSurvives($pid, 'A failed audit write must roll the deletion back');
+        $this->assertSame(0, $removeCalls, 'projectModel::remove must not run when the audit write fails');
+        $this->assertProjectSurvives($pid, 'A failed audit write must leave the project untouched');
         $this->assertNotEmpty($this->flashFailure(), 'The project must be reported as failed');
         $flash = session_get('flash');
         $this->assertStringContainsString('0 project(s) deleted', $flash['success'] ?? '');
+    }
+
+    public function testAuditLineIsWrittenBeforeRemove()
+    {
+        $pid = $this->seedProject('Order check');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+
+        $events       = [];
+        $projectModel = $this
+            ->getMockBuilder(\Kanboard\Model\ProjectModel::class)
+            ->setConstructorArgs([$this->container])
+            ->onlyMethods(['remove'])
+            ->getMock();
+        $projectModel->method('remove')->willReturnCallback(function () use (&$events) {
+            $events[] = 'remove';
+            return true;
+        });
+        unset($this->container['projectModel']);
+        $this->container['projectModel'] = $projectModel;
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function () use (&$events) {
+            $events[] = 'log';
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertSame(['log', 'remove'], $events, 'Exactly one audit line, written before remove()');
     }
 }

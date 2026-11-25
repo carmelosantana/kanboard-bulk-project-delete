@@ -13,9 +13,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   browser enforced it.
 - **Audit log** — each deleted project is logged with the acting user id and
   username, the project id and name.
-- **Audit-first deletion** — the audit line is written inside the project's
-  transaction, before the commit; if logging fails, the deletion rolls back and
-  the project is reported as not deleted.
+- **Audit-first deletion** — the audit line is written before anything is
+  deleted, phrased as the deletion being attempted; if logging fails, nothing is
+  deleted for that project and it is reported as not deleted. Nothing fallible
+  runs after core removes the project's files, so a logging failure can no
+  longer roll back a project whose attachments are already gone from disk.
 - **Required project count** — a delete request without a numeric
   `project_count` now deletes nothing; before, leaving it out skipped the count
   check.

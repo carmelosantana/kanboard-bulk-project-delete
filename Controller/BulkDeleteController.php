@@ -220,6 +220,20 @@ class BulkDeleteController extends BaseController
 
             $this->db->startTransaction();
             try {
+                // Audit-first: the line is written BEFORE any destructive work.
+                // projectModel->remove() deletes attachment files from disk, which a
+                // rollback cannot restore, so nothing fallible may run after it
+                // except the commit. If this write throws, nothing is deleted.
+                // The name is JSON-encoded so a crafted project name cannot forge
+                // extra fields or log lines.
+                $this->logger->info(sprintf(
+                    'BulkProjectDelete: user_id=%d username=%s deleting project_id=%d name=%s',
+                    $this->userSession->getId(),
+                    preg_replace('/[\x00-\x1F\x7F]/', '', (string) $this->userSession->getUsername()),
+                    $projectId,
+                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                ));
+
                 // Close orphan gaps that core's FK cascade does not cover.
                 // These must run BEFORE projectModel->remove() deletes the projects row.
                 $this->db->table('custom_filters')->eq('project_id', $projectId)->remove();
@@ -230,18 +244,6 @@ class BulkDeleteController extends BaseController
                 if (! $this->projectModel->remove($projectId)) {
                     throw new \RuntimeException('projectModel::remove returned false');
                 }
-
-                // Audit trail, written before the commit: if logging fails, the
-                // deletion rolls back and is reported as failed (audit-first).
-                // Who deleted which project. The name is JSON-encoded so a
-                // crafted project name cannot forge extra log lines.
-                $this->logger->info(sprintf(
-                    'BulkProjectDelete: user_id=%d username=%s deleted project_id=%d name=%s',
-                    $this->userSession->getId(),
-                    preg_replace('/[\x00-\x1F\x7F]/', '', (string) $this->userSession->getUsername()),
-                    $projectId,
-                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                ));
 
                 $this->db->closeTransaction();
                 $report['deleted'][$projectId] = $project['name'];
