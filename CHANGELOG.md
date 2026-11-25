@@ -18,6 +18,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   deleted for that project and it is reported as not deleted. Nothing fallible
   runs after core removes the project's files, so a logging failure can no
   longer roll back a project whose attachments are already gone from disk.
+- **Unambiguous audit fields** — the username in the audit line is now a
+  JSON-encoded string like the project name, so a username containing spaces or
+  text such as `user_id=999` cannot forge extra fields.
 - **Required project count** — a delete request without a numeric
   `project_count` now deletes nothing; before, leaving it out skipped the count
   check.

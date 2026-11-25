@@ -1197,7 +1197,7 @@ class RemoveEndpointTest extends Base
 
         foreach ([[$pid1, 'Audit alpha'], [$pid2, 'Audit beta']] as $i => [$pid, $name]) {
             $this->assertStringContainsString('user_id=1', $audit[$i]);
-            $this->assertStringContainsString('username=admin', $audit[$i]);
+            $this->assertStringContainsString('username="admin"', $audit[$i]);
             $this->assertStringContainsString('project_id='.$pid, $audit[$i]);
             $this->assertStringContainsString('"'.$name.'"', $audit[$i]);
         }
@@ -1274,5 +1274,35 @@ class RemoveEndpointTest extends Base
         $controller->remove();
 
         $this->assertSame(['log', 'remove'], $events, 'Exactly one audit line, written before remove()');
+    }
+
+    public function testUsernameCannotInjectFieldsIntoAuditLine()
+    {
+        $pid  = $this->seedProject('Inject check');
+        $evil = 'ops user_id=999 deleted project_id=7';
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+        $userSession = $this->container['userSession'];
+        $userSession->method('getId')->willReturn(1);
+        $userSession->method('getUsername')->willReturn($evil);
+
+        $lines  = [];
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function ($message) use (&$lines) {
+            $lines[] = (string) $message;
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertCount(1, $lines);
+        $line = $lines[0];
+        $this->assertSame(1, preg_match_all('/\buser_id=/', $line), 'Exactly one user_id field');
+        $this->assertSame(1, preg_match_all('/\bproject_id=/', $line), 'Exactly one project_id field');
+        $this->assertStringContainsString('username='.json_encode($evil), $line, 'Username is a quoted JSON string');
     }
 }

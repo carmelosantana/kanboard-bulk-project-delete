@@ -224,14 +224,14 @@ class BulkDeleteController extends BaseController
                 // projectModel->remove() deletes attachment files from disk, which a
                 // rollback cannot restore, so nothing fallible may run after it
                 // except the commit. If this write throws, nothing is deleted.
-                // The name is JSON-encoded so a crafted project name cannot forge
+                // The username and name are JSON-encoded so a crafted value cannot forge
                 // extra fields or log lines.
                 $this->logger->info(sprintf(
                     'BulkProjectDelete: user_id=%d username=%s deleting project_id=%d name=%s',
                     $this->userSession->getId(),
-                    preg_replace('/[\x00-\x1F\x7F]/', '', (string) $this->userSession->getUsername()),
+                    json_encode((string) $this->userSession->getUsername(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
                     $projectId,
-                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)
                 ));
 
                 // Close orphan gaps that core's FK cascade does not cover.
