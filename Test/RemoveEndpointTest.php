@@ -124,13 +124,20 @@ class RemoveEndpointTest extends Base
     private function buildController(
         bool $isAdmin,
         array $postValues = [],
-        bool $validCsrf = true
+        bool $validCsrf = true,
+        bool $autoConfirm = true
     ): BulkDeleteController {
+        // Most tests exercise the delete path, so post the typed confirmation by
+        // default; the confirmation-gate tests opt out or pass their own value.
+        if ($autoConfirm && ! array_key_exists('confirm_word', $postValues)) {
+            $postValues['confirm_word'] = 'DELETE';
+        }
+
         // Stub userSession.isAdmin
         $userSession = $this
             ->getMockBuilder(\Kanboard\Core\User\UserSession::class)
             ->setConstructorArgs([$this->container])
-            ->onlyMethods(['isAdmin'])
+            ->onlyMethods(['isAdmin', 'getId', 'getUsername'])
             ->getMock();
         $userSession->method('isAdmin')->willReturn($isAdmin);
         unset($this->container['userSession']);
@@ -1017,5 +1024,110 @@ class RemoveEndpointTest extends Base
                 @rmdir($filesDir);
             }
         }
+    }
+
+    // ── Server-side typed confirmation gate ──────────────────────────────────
+
+    private function assertProjectSurvives(int $pid, string $why): void
+    {
+        $this->assertNotEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            $why
+        );
+    }
+
+    private function flashFailure(): ?string
+    {
+        $flash = session_exists('flash') ? session_get('flash') : [];
+        return $flash['failure'] ?? null;
+    }
+
+    public function testMissingConfirmationDeletesNothing()
+    {
+        $pid = $this->seedProject('No confirm word');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]],
+            autoConfirm: false
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a missing confirmation');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    /**
+     * @dataProvider wrongConfirmationProvider
+     */
+    public function testWrongConfirmationDeletesNothing($word)
+    {
+        $pid = $this->seedProject('Wrong confirm word');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => $word]
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a wrong confirmation');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    public static function wrongConfirmationProvider(): array
+    {
+        return [
+            'lowercase'      => ['delete'],
+            'padded'         => [' DELETE '],
+            'empty'          => [''],
+            'other word'     => ['YES'],
+            'array injected' => [['DELETE']],
+        ];
+    }
+
+    public function testCorrectConfirmationDeletes()
+    {
+        $pid = $this->seedProject('Confirmed');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => 'DELETE']
+        );
+        $controller->remove();
+
+        $this->assertEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            'Project must be deleted with the exact confirmation'
+        );
+    }
+
+    public function testProjectCountMismatchDeletesNothing()
+    {
+        $pid = $this->seedProject('Count mismatch');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'project_count' => '2']
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a project count mismatch');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    public function testMatchingProjectCountDeletes()
+    {
+        $pid = $this->seedProject('Count matches');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'project_count' => '1']
+        );
+        $controller->remove();
+
+        $this->assertEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            'Project must be deleted when the posted count matches'
+        );
     }
 }

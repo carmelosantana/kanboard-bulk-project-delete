@@ -192,9 +192,22 @@ class BulkDeleteController extends BaseController
 
         $this->checkCSRFForm();
 
-        $rawIds = $this->request->getValues()['project_ids'] ?? [];
+        $values = $this->request->getValues();
+        $rawIds = $values['project_ids'] ?? [];
         // Cast to int, drop zeros (blank/whitespace entries cast to 0).
         $ids = array_values(array_unique(array_filter(array_map('intval', (array) $rawIds))));
+
+        // The typed DELETE gate is enforced here, not only in the browser JS.
+        // The posted project_count, when present, must match the ids received.
+        $confirmed = ($values['confirm_word'] ?? null) === 'DELETE';
+        $countOk   = ! isset($values['project_count'])
+            || (string) $values['project_count'] === (string) count($ids);
+
+        if (! $confirmed || ! $countOk) {
+            $this->flash->failure(t('Deletion not confirmed. Type DELETE to confirm; no projects were deleted.'));
+            $this->response->redirect($this->helper->url->to('ProjectListController', 'show'));
+            return;
+        }
 
         $report = ['deleted' => [], 'failed' => []];
 
