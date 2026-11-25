@@ -5,6 +5,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Server-side delete confirmation** — the bulk delete endpoint now requires the
+  typed `DELETE` confirmation and a matching project count; before, only the
+  browser enforced it.
+- **Audit log** — each deleted project is logged with the acting user id and
+  username, the project id and name.
+
 ## [1.0.1] — 2026-07-03
 
 ### Fixed
