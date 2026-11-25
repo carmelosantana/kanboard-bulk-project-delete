@@ -5,8 +5,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
-
+## 1.1.0 — 2026-11-25
 ### Security
 
 - **Server-side delete confirmation** — the bulk delete endpoint now requires the
