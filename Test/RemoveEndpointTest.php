@@ -132,6 +132,12 @@ class RemoveEndpointTest extends Base
         if ($autoConfirm && ! array_key_exists('confirm_word', $postValues)) {
             $postValues['confirm_word'] = 'DELETE';
         }
+        // Likewise post the project count the confirm template sends: the number of
+        // distinct non-zero ids, counted the way the controller counts them.
+        if ($autoConfirm && ! array_key_exists('project_count', $postValues)) {
+            $ids = array_unique(array_filter(array_map('intval', (array) ($postValues['project_ids'] ?? []))));
+            $postValues['project_count'] = (string) count($ids);
+        }
 
         // Stub userSession.isAdmin
         $userSession = $this
@@ -1113,6 +1119,35 @@ class RemoveEndpointTest extends Base
 
         $this->assertProjectSurvives($pid, 'Project must survive a project count mismatch');
         $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    /**
+     * @dataProvider missingProjectCountProvider
+     */
+    public function testMissingOrNonNumericProjectCountDeletesNothing(array $count)
+    {
+        $pid = $this->seedProject('No project count');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => 'DELETE'] + $count,
+            autoConfirm: false
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a missing or non-numeric project count');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    public static function missingProjectCountProvider(): array
+    {
+        return [
+            'missing'        => [[]],
+            'empty'          => [['project_count' => '']],
+            'non-numeric'    => [['project_count' => 'one']],
+            'numeric prefix' => [['project_count' => '1abc']],
+            'array injected' => [['project_count' => ['1']]],
+        ];
     }
 
     public function testMatchingProjectCountDeletes()

@@ -17,6 +17,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Audit-first deletion** — the audit line is written inside the project's
   transaction, before the commit; if logging fails, the deletion rolls back and
   the project is reported as not deleted.
+- **Required project count** — a delete request without a numeric
+  `project_count` now deletes nothing; before, leaving it out skipped the count
+  check.
 
 ## [1.0.1] — 2026-07-03
 

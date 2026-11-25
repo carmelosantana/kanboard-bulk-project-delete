@@ -198,10 +198,10 @@ class BulkDeleteController extends BaseController
         $ids = array_values(array_unique(array_filter(array_map('intval', (array) $rawIds))));
 
         // The typed DELETE gate is enforced here, not only in the browser JS.
-        // The posted project_count, when present, must match the ids received.
+        // The posted project_count is required and must match the ids received.
         $confirmed = ($values['confirm_word'] ?? null) === 'DELETE';
-        $countOk   = ! isset($values['project_count'])
-            || (string) $values['project_count'] === (string) count($ids);
+        $count     = $values['project_count'] ?? null;
+        $countOk   = is_string($count) && ctype_digit($count) && (int) $count === count($ids);
 
         if (! $confirmed || ! $countOk) {
             $this->flash->failure(t('Deletion not confirmed. Type DELETE to confirm; no projects were deleted.'));
