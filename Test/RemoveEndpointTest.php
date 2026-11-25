@@ -124,13 +124,26 @@ class RemoveEndpointTest extends Base
     private function buildController(
         bool $isAdmin,
         array $postValues = [],
-        bool $validCsrf = true
+        bool $validCsrf = true,
+        bool $autoConfirm = true
     ): BulkDeleteController {
+        // Most tests exercise the delete path, so post the typed confirmation by
+        // default; the confirmation-gate tests opt out or pass their own value.
+        if ($autoConfirm && ! array_key_exists('confirm_word', $postValues)) {
+            $postValues['confirm_word'] = 'DELETE';
+        }
+        // Likewise post the project count the confirm template sends: the number of
+        // distinct non-zero ids, counted the way the controller counts them.
+        if ($autoConfirm && ! array_key_exists('project_count', $postValues)) {
+            $ids = array_unique(array_filter(array_map('intval', (array) ($postValues['project_ids'] ?? []))));
+            $postValues['project_count'] = (string) count($ids);
+        }
+
         // Stub userSession.isAdmin
         $userSession = $this
             ->getMockBuilder(\Kanboard\Core\User\UserSession::class)
             ->setConstructorArgs([$this->container])
-            ->onlyMethods(['isAdmin'])
+            ->onlyMethods(['isAdmin', 'getId', 'getUsername'])
             ->getMock();
         $userSession->method('isAdmin')->willReturn($isAdmin);
         unset($this->container['userSession']);
@@ -1017,5 +1030,282 @@ class RemoveEndpointTest extends Base
                 @rmdir($filesDir);
             }
         }
+    }
+
+    // ── Server-side typed confirmation gate ──────────────────────────────────
+
+    private function assertProjectSurvives(int $pid, string $why): void
+    {
+        $this->assertNotEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            $why
+        );
+    }
+
+    private function flashFailure(): ?string
+    {
+        $flash = session_exists('flash') ? session_get('flash') : [];
+        return $flash['failure'] ?? null;
+    }
+
+    public function testMissingConfirmationDeletesNothing()
+    {
+        $pid = $this->seedProject('No confirm word');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]],
+            autoConfirm: false
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a missing confirmation');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    /**
+     * @dataProvider wrongConfirmationProvider
+     */
+    public function testWrongConfirmationDeletesNothing($word)
+    {
+        $pid = $this->seedProject('Wrong confirm word');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => $word]
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a wrong confirmation');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    public static function wrongConfirmationProvider(): array
+    {
+        return [
+            'lowercase'      => ['delete'],
+            'padded'         => [' DELETE '],
+            'empty'          => [''],
+            'other word'     => ['YES'],
+            'array injected' => [['DELETE']],
+        ];
+    }
+
+    public function testCorrectConfirmationDeletes()
+    {
+        $pid = $this->seedProject('Confirmed');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => 'DELETE']
+        );
+        $controller->remove();
+
+        $this->assertEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            'Project must be deleted with the exact confirmation'
+        );
+    }
+
+    public function testProjectCountMismatchDeletesNothing()
+    {
+        $pid = $this->seedProject('Count mismatch');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'project_count' => '2']
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a project count mismatch');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    /**
+     * @dataProvider missingProjectCountProvider
+     */
+    public function testMissingOrNonNumericProjectCountDeletesNothing(array $count)
+    {
+        $pid = $this->seedProject('No project count');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'confirm_word' => 'DELETE'] + $count,
+            autoConfirm: false
+        );
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'Project must survive a missing or non-numeric project count');
+        $this->assertNotEmpty($this->flashFailure(), 'A failure flash must be set');
+    }
+
+    public static function missingProjectCountProvider(): array
+    {
+        return [
+            'missing'        => [[]],
+            'empty'          => [['project_count' => '']],
+            'non-numeric'    => [['project_count' => 'one']],
+            'numeric prefix' => [['project_count' => '1abc']],
+            'array injected' => [['project_count' => ['1']]],
+        ];
+    }
+
+    public function testMatchingProjectCountDeletes()
+    {
+        $pid = $this->seedProject('Count matches');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid], 'project_count' => '1']
+        );
+        $controller->remove();
+
+        $this->assertEmpty(
+            $this->container['db']->table('projects')->eq('id', $pid)->findOne(),
+            'Project must be deleted when the posted count matches'
+        );
+    }
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+
+    public function testLoggerReceivesEntryPerDeletedProject()
+    {
+        $pid1 = $this->seedProject('Audit alpha');
+        $pid2 = $this->seedProject('Audit beta');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid1, $pid2, 999999]]
+        );
+
+        $userSession = $this->container['userSession'];
+        $userSession->method('getId')->willReturn(1);
+        $userSession->method('getUsername')->willReturn('admin');
+
+        $lines  = [];
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function ($message) use (&$lines) {
+            $lines[] = (string) $message;
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $audit = array_values(array_filter($lines, fn ($l) => str_contains($l, 'BulkProjectDelete')));
+        $this->assertCount(2, $audit, 'One audit line per deleted project, none for the failed id');
+
+        foreach ([[$pid1, 'Audit alpha'], [$pid2, 'Audit beta']] as $i => [$pid, $name]) {
+            $this->assertStringContainsString('user_id=1', $audit[$i]);
+            $this->assertStringContainsString('username="admin"', $audit[$i]);
+            $this->assertStringContainsString('project_id='.$pid, $audit[$i]);
+            $this->assertStringContainsString('"'.$name.'"', $audit[$i]);
+        }
+    }
+
+    public function testLoggerFailureDeletesNothingAndNeverReachesRemove()
+    {
+        $pid = $this->seedProject('Audit fails');
+        $this->seedTask($pid);
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+
+        // Spy on core's file-aware cascade: it deletes attachments from disk and
+        // cannot be rolled back, so it must never run when the audit write fails.
+        $removeCalls  = 0;
+        $projectModel = $this
+            ->getMockBuilder(\Kanboard\Model\ProjectModel::class)
+            ->setConstructorArgs([$this->container])
+            ->onlyMethods(['remove'])
+            ->getMock();
+        $projectModel->method('remove')->willReturnCallback(function () use (&$removeCalls) {
+            $removeCalls++;
+            return true;
+        });
+        unset($this->container['projectModel']);
+        $this->container['projectModel'] = $projectModel;
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willThrowException(new \RuntimeException('log sink down'));
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertSame(0, $removeCalls, 'projectModel::remove must not run when the audit write fails');
+        $this->assertProjectSurvives($pid, 'A failed audit write must leave the project untouched');
+        $this->assertNotEmpty($this->flashFailure(), 'The project must be reported as failed');
+        $flash = session_get('flash');
+        $this->assertStringContainsString('0 project(s) deleted', $flash['success'] ?? '');
+    }
+
+    public function testAuditLineIsWrittenBeforeRemove()
+    {
+        $pid = $this->seedProject('Order check');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+
+        $events       = [];
+        $projectModel = $this
+            ->getMockBuilder(\Kanboard\Model\ProjectModel::class)
+            ->setConstructorArgs([$this->container])
+            ->onlyMethods(['remove'])
+            ->getMock();
+        $projectModel->method('remove')->willReturnCallback(function () use (&$events) {
+            $events[] = 'remove';
+            return true;
+        });
+        unset($this->container['projectModel']);
+        $this->container['projectModel'] = $projectModel;
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function () use (&$events) {
+            $events[] = 'log';
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertSame(['log', 'remove'], $events, 'Exactly one audit line, written before remove()');
+    }
+
+    public function testUsernameCannotInjectFieldsIntoAuditLine()
+    {
+        $pid  = $this->seedProject('Inject check');
+        $evil = 'ops user_id=999 deleted project_id=7';
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+        $userSession = $this->container['userSession'];
+        $userSession->method('getId')->willReturn(1);
+        $userSession->method('getUsername')->willReturn($evil);
+
+        $lines  = [];
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function ($message) use (&$lines) {
+            $lines[] = (string) $message;
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertCount(1, $lines);
+        $line = $lines[0];
+        // Fields outside quoted JSON strings are the real ones; text inside a
+        // quoted string is data and cannot be mistaken for a field.
+        $outside = preg_replace('/"(?:[^"\\\\]|\\\\.)*"/', '""', $line);
+        $this->assertSame(1, preg_match_all('/\buser_id=/', $outside), 'Exactly one user_id field');
+        $this->assertSame(1, preg_match_all('/\bproject_id=/', $outside), 'Exactly one project_id field');
+        $this->assertStringContainsString('username='.json_encode($evil), $line, 'Username is a quoted JSON string');
     }
 }

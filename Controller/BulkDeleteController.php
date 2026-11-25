@@ -192,9 +192,22 @@ class BulkDeleteController extends BaseController
 
         $this->checkCSRFForm();
 
-        $rawIds = $this->request->getValues()['project_ids'] ?? [];
+        $values = $this->request->getValues();
+        $rawIds = $values['project_ids'] ?? [];
         // Cast to int, drop zeros (blank/whitespace entries cast to 0).
         $ids = array_values(array_unique(array_filter(array_map('intval', (array) $rawIds))));
+
+        // The typed DELETE gate is enforced here, not only in the browser JS.
+        // The posted project_count is required and must match the ids received.
+        $confirmed = ($values['confirm_word'] ?? null) === 'DELETE';
+        $count     = $values['project_count'] ?? null;
+        $countOk   = is_string($count) && ctype_digit($count) && (int) $count === count($ids);
+
+        if (! $confirmed || ! $countOk) {
+            $this->flash->failure(t('Deletion not confirmed. Type DELETE to confirm; no projects were deleted.'));
+            $this->response->redirect($this->helper->url->to('ProjectListController', 'show'));
+            return;
+        }
 
         $report = ['deleted' => [], 'failed' => []];
 
@@ -207,6 +220,20 @@ class BulkDeleteController extends BaseController
 
             $this->db->startTransaction();
             try {
+                // Audit-first: the line is written BEFORE any destructive work.
+                // projectModel->remove() deletes attachment files from disk, which a
+                // rollback cannot restore, so nothing fallible may run after it
+                // except the commit. If this write throws, nothing is deleted.
+                // The username and name are JSON-encoded so a crafted value cannot forge
+                // extra fields or log lines.
+                $this->logger->info(sprintf(
+                    'BulkProjectDelete: user_id=%d username=%s deleting project_id=%d name=%s',
+                    $this->userSession->getId(),
+                    json_encode((string) $this->userSession->getUsername(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                    $projectId,
+                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)
+                ));
+
                 // Close orphan gaps that core's FK cascade does not cover.
                 // These must run BEFORE projectModel->remove() deletes the projects row.
                 $this->db->table('custom_filters')->eq('project_id', $projectId)->remove();

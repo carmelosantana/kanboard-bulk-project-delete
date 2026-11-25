@@ -99,6 +99,7 @@ $projectCount = count($rows);
         data-project-count="<?= $projectCount ?>"
     >
         <?= $this->form->csrf() ?>
+        <input type="hidden" name="project_count" value="<?= $projectCount ?>">
 
         <?php foreach ($rows as $row): ?>
         <input type="hidden" name="project_ids[]" value="<?= (int) $row['id'] ?>">
