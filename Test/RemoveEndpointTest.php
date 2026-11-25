@@ -1301,8 +1301,11 @@ class RemoveEndpointTest extends Base
 
         $this->assertCount(1, $lines);
         $line = $lines[0];
-        $this->assertSame(1, preg_match_all('/\buser_id=/', $line), 'Exactly one user_id field');
-        $this->assertSame(1, preg_match_all('/\bproject_id=/', $line), 'Exactly one project_id field');
+        // Fields outside quoted JSON strings are the real ones; text inside a
+        // quoted string is data and cannot be mistaken for a field.
+        $outside = preg_replace('/"(?:[^"\\\\]|\\\\.)*"/', '""', $line);
+        $this->assertSame(1, preg_match_all('/\buser_id=/', $outside), 'Exactly one user_id field');
+        $this->assertSame(1, preg_match_all('/\bproject_id=/', $outside), 'Exactly one project_id field');
         $this->assertStringContainsString('username='.json_encode($evil), $line, 'Username is a quoted JSON string');
     }
 }
