@@ -14,6 +14,9 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   browser enforced it.
 - **Audit log** — each deleted project is logged with the acting user id and
   username, the project id and name.
+- **Audit-first deletion** — the audit line is written inside the project's
+  transaction, before the commit; if logging fails, the deletion rolls back and
+  the project is reported as not deleted.
 
 ## [1.0.1] — 2026-07-03
 

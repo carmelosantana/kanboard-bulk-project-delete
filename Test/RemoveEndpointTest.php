@@ -1167,4 +1167,26 @@ class RemoveEndpointTest extends Base
             $this->assertStringContainsString('"'.$name.'"', $audit[$i]);
         }
     }
+
+    public function testLoggerFailureRollsBackDeletionAndReportsFailed()
+    {
+        $pid = $this->seedProject('Audit fails');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid]]
+        );
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willThrowException(new \RuntimeException('log sink down'));
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $this->assertProjectSurvives($pid, 'A failed audit write must roll the deletion back');
+        $this->assertNotEmpty($this->flashFailure(), 'The project must be reported as failed');
+        $flash = session_get('flash');
+        $this->assertStringContainsString('0 project(s) deleted', $flash['success'] ?? '');
+    }
 }
