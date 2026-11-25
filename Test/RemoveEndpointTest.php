@@ -1130,4 +1130,41 @@ class RemoveEndpointTest extends Base
             'Project must be deleted when the posted count matches'
         );
     }
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+
+    public function testLoggerReceivesEntryPerDeletedProject()
+    {
+        $pid1 = $this->seedProject('Audit alpha');
+        $pid2 = $this->seedProject('Audit beta');
+
+        $controller = $this->buildController(
+            isAdmin: true,
+            postValues: ['project_ids' => [$pid1, $pid2, 999999]]
+        );
+
+        $userSession = $this->container['userSession'];
+        $userSession->method('getId')->willReturn(1);
+        $userSession->method('getUsername')->willReturn('admin');
+
+        $lines  = [];
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->method('info')->willReturnCallback(function ($message) use (&$lines) {
+            $lines[] = (string) $message;
+        });
+        unset($this->container['logger']);
+        $this->container['logger'] = $logger;
+
+        $controller->remove();
+
+        $audit = array_values(array_filter($lines, fn ($l) => str_contains($l, 'BulkProjectDelete')));
+        $this->assertCount(2, $audit, 'One audit line per deleted project, none for the failed id');
+
+        foreach ([[$pid1, 'Audit alpha'], [$pid2, 'Audit beta']] as $i => [$pid, $name]) {
+            $this->assertStringContainsString('user_id=1', $audit[$i]);
+            $this->assertStringContainsString('username=admin', $audit[$i]);
+            $this->assertStringContainsString('project_id='.$pid, $audit[$i]);
+            $this->assertStringContainsString('"'.$name.'"', $audit[$i]);
+        }
+    }
 }

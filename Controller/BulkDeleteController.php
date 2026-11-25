@@ -233,6 +233,16 @@ class BulkDeleteController extends BaseController
 
                 $this->db->closeTransaction();
                 $report['deleted'][$projectId] = $project['name'];
+
+                // Audit trail: who deleted which project. The name is JSON-encoded so a
+                // crafted project name cannot forge extra log lines.
+                $this->logger->info(sprintf(
+                    'BulkProjectDelete: user_id=%d username=%s deleted project_id=%d name=%s',
+                    $this->userSession->getId(),
+                    preg_replace('/[\x00-\x1F\x7F]/', '', (string) $this->userSession->getUsername()),
+                    $projectId,
+                    json_encode((string) $project['name'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                ));
             } catch (\Throwable $e) {
                 $this->db->cancelTransaction();
                 $report['failed'][$projectId] = $e->getMessage();
